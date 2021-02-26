@@ -83,7 +83,8 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
 }
 
 fn send_block(mut content_packet: ContentPacket, host: &String, socket: &UdpSocket, file: &File) {
-    file.read_at(&mut content_packet.data, content_packet.offset * 32).expect("cant read");
+    file.read_at(&mut content_packet.data, content_packet.offset * 32)
+        .expect("cant read");
     let encoded: Vec<u8> = bincode::serialize(&content_packet).unwrap();
     socket.send_to(&encoded[..], host).expect("cant send_to");
 }
@@ -116,17 +117,32 @@ fn receive() -> Result<bool, std::io::Error> {
             };
             inbound_states.insert(hex::encode(content_packet.hash), inbound_state);
         }
-        let mut inbound_state = inbound_states.get_mut(&hex::encode(content_packet.hash)).unwrap();
-        inbound_state.file.write_at(&content_packet.data, content_packet.offset * 32).expect("cant write");
-        if inbound_state.bitmap.get(content_packet.offset as usize).unwrap() {
+        let mut inbound_state = inbound_states
+            .get_mut(&hex::encode(content_packet.hash))
+            .unwrap();
+        inbound_state
+            .file
+            .write_at(&content_packet.data, content_packet.offset * 32)
+            .expect("cant write");
+        if inbound_state
+            .bitmap
+            .get(content_packet.offset as usize)
+            .unwrap()
+        {
             println!("dup: {:?}", content_packet.offset);
         }
         if content_packet.offset > inbound_state.highest_seen {
             inbound_state.highest_seen = content_packet.offset
         }
-        inbound_state.bitmap.set(content_packet.offset as usize, true);
+        inbound_state
+            .bitmap
+            .set(content_packet.offset as usize, true);
         if content_packet.offset == inbound_state.first_missing {
-            while inbound_state.first_missing < blocks(inbound_state.len) && inbound_state.bitmap.get(inbound_state.first_missing as usize).unwrap()
+            while inbound_state.first_missing < blocks(inbound_state.len)
+                && inbound_state
+                    .bitmap
+                    .get(inbound_state.first_missing as usize)
+                    .unwrap()
             {
                 inbound_state.first_missing += 1;
             }
@@ -155,7 +171,11 @@ fn receive() -> Result<bool, std::io::Error> {
             println!("requesting block {:?}", request_packet.offset);
         }
         inbound_state.next_missing %= blocks(inbound_state.len);
-        while inbound_state.bitmap.get(inbound_state.next_missing as usize).unwrap() {
+        while inbound_state
+            .bitmap
+            .get(inbound_state.next_missing as usize)
+            .unwrap()
+        {
             inbound_state.next_missing += 1;
             inbound_state.next_missing %= blocks(inbound_state.len);
         }
@@ -167,17 +187,26 @@ fn receive() -> Result<bool, std::io::Error> {
 
         if (inbound_state.requested % 100) == 0 {
             // push it to 1% packet loss
-            if inbound_state.next_missing < inbound_state.highest_seen || inbound_state.lastreq + 1 >= blocks(inbound_state.len) {
+            if inbound_state.next_missing < inbound_state.highest_seen
+                || inbound_state.lastreq + 1 >= blocks(inbound_state.len)
+            {
                 request_packet.offset = inbound_state.next_missing;
                 inbound_state.next_missing += 1;
-                println!("requesting extra, missing block {:?}", request_packet.offset);
+                println!(
+                    "requesting extra, missing block {:?}",
+                    request_packet.offset
+                );
             } else {
                 inbound_state.lastreq += 1;
                 request_packet.offset = inbound_state.lastreq;
                 println!("requesting extra block {:?}", request_packet.offset);
             }
             inbound_state.next_missing %= blocks(inbound_state.len);
-            while inbound_state.bitmap.get(inbound_state.next_missing as usize).unwrap() {
+            while inbound_state
+                .bitmap
+                .get(inbound_state.next_missing as usize)
+                .unwrap()
+            {
                 inbound_state.next_missing += 1;
                 inbound_state.next_missing %= blocks(inbound_state.len);
             }
