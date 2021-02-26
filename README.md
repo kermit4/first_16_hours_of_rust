@@ -22,4 +22,3 @@ should result in a file called "f000.." with the same content
 	* tail end of transfer has a lot of dups
 	* better variable names
 	* reduce code duplication and break up long receive() function
-	* run through code formatter/prettifier
