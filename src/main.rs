@@ -7,6 +7,7 @@ use std::io::Read;
 use std::net::UdpSocket;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::time::Duration;
 
 struct InboundState {
     file: File,
@@ -45,6 +46,7 @@ fn main() {
 
 fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
     let socket = UdpSocket::bind("0.0.0.0:0").expect("bind failed");
+	socket.set_read_timeout(Some(Duration::new(5, 0)))?;
     let mut file = File::open(pathname)?;
     let metadata = fs::metadata(&pathname).expect("unable to read metadata");
     let mut buffer = [0; 32]; // vec![0; 32 as usize];
@@ -68,7 +70,15 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
             send_block(content_packet, host, &socket, &file);
         } else {
             let mut buf = [0; 1500]; //	[0; ::std::mem::size_of::ContentPacket];
-            let (_amt, _src) = socket.recv_from(&mut buf).expect("socket error");
+            match socket.recv_from(&mut buf) {
+				Ok(_r) => true,
+				Err(_e) => { 
+					started=false;
+					println!("stalled, bumping");
+					continue;
+				},
+			};
+//            let (_amt, _src) = socket.recv_from(&mut buf).expect("socket error");
             let req: RequestPacket = bincode::deserialize(&buf).unwrap();
             println!("sending block: {:?}", req.offset);
             let content_packet = ContentPacket {
