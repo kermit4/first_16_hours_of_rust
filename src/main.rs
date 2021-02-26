@@ -18,7 +18,6 @@ struct InboundState {
     highest_seen: u64,
     bitmap: BitVec,
     lastreq: u64,
-    hash: [u8; 32],
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -81,6 +80,9 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
 //            let (_amt, _src) = socket.recv_from(&mut buf).expect("socket error");
             let req: RequestPacket = bincode::deserialize(&buf).unwrap();
             println!("sending block: {:?}", req.offset);
+			if req.offset == !0 {
+				std::process::exit(0);
+			}
             let content_packet = ContentPacket {
                 len: metadata.len(),
                 offset: req.offset,
@@ -115,7 +117,6 @@ fn receive() -> Result<bool, std::io::Error> {
         if !inbound_states.contains_key(&hex::encode(content_packet.hash)) {
             // new upload
             let inbound_state = InboundState {
-                hash: content_packet.hash,
                 lastreq: 0,
                 file: File::create(Path::new(&hex::encode(content_packet.hash)))?,
                 len: content_packet.len,
@@ -157,19 +158,23 @@ fn receive() -> Result<bool, std::io::Error> {
                 inbound_state.first_missing += 1;
             }
         }
+        
+		let mut request_packet = RequestPacket {
+            offset: 0,
+            hash: content_packet.hash,
+        };
 
         if inbound_state.first_missing == blocks(inbound_state.len) {
             // upload done
             inbound_state.file.set_len(inbound_state.len)?;
             println!("upload done");
             //			inbound_states.remove(&hex::encode(content_packet.hash));  this will just start over if packets are in flight, so it needs a delay
+			request_packet.offset = !0;
+			let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
+			socket.send_to(&encoded[..], &src).expect("cant send_to");
             continue;
         }
 
-        let mut request_packet = RequestPacket {
-            offset: 0,
-            hash: content_packet.hash,
-        };
         inbound_state.lastreq += 1;
         if inbound_state.lastreq >= blocks(inbound_state.len) {
             // "done" but just filling in holes now
@@ -189,8 +194,6 @@ fn receive() -> Result<bool, std::io::Error> {
             inbound_state.next_missing += 1;
             inbound_state.next_missing %= blocks(inbound_state.len);
         }
-        request_packet.hash = inbound_state.hash;
-
         let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
         socket.send_to(&encoded[..], &src).expect("cant send_to");
         inbound_state.requested += 1;
