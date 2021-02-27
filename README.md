@@ -2,8 +2,6 @@ THIS IS JUST A DEMO OF MY RUST SKILL LEVEL AND LEARNING SPEED, IT IS NOT ACTUALL
 
 I'm now attempting to use more Rust features and development tools than necessary, as it was working after 8 hours and full featured after 14.
 
-I'm actually at 15 hours of Rust now.  The number of lines in the file worklog.txt shows the time spent at that point in the git history.
-
 If run with no args, it will listen for uploads.
 
 With args it will send a file.  
