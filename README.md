@@ -16,6 +16,4 @@ should result in a file called "f000.." with the same content
 	* retransmission
 	* transmission window scaling
 ## TODO:
-	* use real hash
-	* use larger than 32 byte blocks (damn serde limit!)
 	* reduce code duplication and break up long receive() function

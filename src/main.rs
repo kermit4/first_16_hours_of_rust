@@ -8,17 +8,22 @@ use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::time::Duration;
 use std::mem::transmute;
+use std::io::copy;
+use sha2::{Sha256,Digest};
+use std::convert::TryInto;
+use std::fs::OpenOptions;
 
 struct InboundState {
     file: File,
     len: u64,
-    hash: [u8; 32],
+    hash: [u8; 256/8],
     blocks_remaining: u64,
     next_missing: u64,
     requested: u64,
     highest_seen: u64,
     bitmap: BitVec,
     lastreq: u64,
+	hash_checked: bool,
 }
 
 impl InboundState {
@@ -57,7 +62,7 @@ impl InboundState {
 struct ContentPacket {
     len: u64,
     offset: u64,
-    hash: [u8; 32],
+    hash: [u8; 256/8],
     data: [u8; ContentPacket::block_size() as usize], // serde had a strange 32 byte limit.  also serde would not be a portable network protocol format.
 }
 
@@ -71,7 +76,7 @@ impl ContentPacket {
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct RequestPacket {
     offset: u64,
-    hash: [u8; 32],
+    hash: [u8; 256/8],
 }
 
 fn main() {
@@ -86,7 +91,7 @@ fn main() {
 fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
     let socket = UdpSocket::bind("0.0.0.0:0").expect("bind failed");
     socket.set_read_timeout(Some(Duration::new(5, 0)))?;
-    let file = File::open(pathname)?;
+    let mut file = File::open(pathname)?;
     let metadata = fs::metadata(&pathname).expect("unable to read metadata");
     let buffer = [0; ContentPacket::block_size() as usize]; // vec![0; 32 as usize];
     let mut started = false;
@@ -98,13 +103,10 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
 		socket.send_to(&encoded[..], host).expect("cant send_to");
 	}
 
+	let mut sha256 = Sha256::new();
+	copy(&mut file, &mut sha256)?;
+    let hash =  sha256.finalize().as_slice().try_into().expect("Wrong length");
     loop {
-        let mut hash = [0u8; 32];
-        hex::decode_to_slice(
-            "f000000000000000f000000000000000f000000000000000f000000000000000",
-            &mut hash as &mut [u8],
-        )
-        .expect("not hex"); // not the real hash obviously
         if !started {
             let content_packet = ContentPacket {
                 len: metadata.len(),
@@ -158,11 +160,18 @@ fn receive() -> Result<bool, std::io::Error> {
             // new upload
             let inbound_state = InboundState {
                 lastreq: 0,
-                file: File::create(Path::new(&hex::encode(content_packet.hash)))?,
+                file:  // File::create(
+				OpenOptions::new()
+
+				            .create(true)
+				    .read(true)
+					    .write(true)
+						    .open(Path::new(&hex::encode(content_packet.hash)))?,
                 len: content_packet.len,
                 blocks_remaining: blocks(content_packet.len),
                 next_missing: 0,
                 highest_seen: 0,
+				hash_checked: false,
                 hash: content_packet.hash,
                 requested: 0,
                 bitmap: BitVec::from_elem(blocks(content_packet.len) as usize, false),
@@ -197,9 +206,18 @@ fn receive() -> Result<bool, std::io::Error> {
 
         if inbound_state.blocks_remaining == 0 {
             // upload done
-            inbound_state.file.set_len(inbound_state.len)?;
-            println!("received {:?}", &hex::encode(&content_packet.hash));
-            //			inbound_states.remove(&hex::encode(content_packet.hash));  this will just start over if packets are in flight, so it needs a delay
+			if ! inbound_state.hash_checked {
+				inbound_state.file.set_len(inbound_state.len)?;
+				println!("received {:?}", &hex::encode(&content_packet.hash));
+				//			inbound_states.remove(&hex::encode(content_packet.hash));  this will just start over if packets are in flight, so it needs a delay
+				let mut sha256 = Sha256::new();
+				copy(&mut inbound_state.file, &mut sha256)?;
+				let hash: [u8;256/8] = sha256.finalize().as_slice().try_into().expect("Wrong length");
+				println!("verified hash {:?}", &hex::encode(&hash));
+				std::assert_eq!(hash,inbound_state.hash);
+				inbound_state.hash_checked=true;
+				drop(&inbound_state.file);
+			}
             request_packet.offset = !0;
             let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
             socket.send_to(&encoded[..], &src).expect("cant send_to");
