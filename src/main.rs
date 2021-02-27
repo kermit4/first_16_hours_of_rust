@@ -7,6 +7,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::time::Duration;
+use std::mem::transmute;
 
 struct InboundState {
     file: File,
@@ -51,13 +52,20 @@ impl InboundState {
     }
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[repr(C)] 
 struct ContentPacket {
     len: u64,
     offset: u64,
     hash: [u8; 32],
-    data: [u8; 32], // something about serde being limited to 32 byte u8s??  i took a wrong turn there i guess
+    data: [u8; ContentPacket::block_size() as usize], // serde had a strange 32 byte limit.  also serde would not be a portable network protocol format.
 }
+
+impl ContentPacket {
+	const fn block_size() -> u64 {
+		64 // intentionally small for faster testing
+	}
+}
+
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct RequestPacket {
@@ -79,7 +87,7 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
     socket.set_read_timeout(Some(Duration::new(5, 0)))?;
     let file = File::open(pathname)?;
     let metadata = fs::metadata(&pathname).expect("unable to read metadata");
-    let buffer = [0; 32]; // vec![0; 32 as usize];
+    let buffer = [0; ContentPacket::block_size() as usize]; // vec![0; 32 as usize];
     let mut started = false;
     loop {
         let mut hash = [0u8; 32];
@@ -125,14 +133,14 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
 }
 
 fn send_block(mut content_packet: ContentPacket, host: &String, socket: &UdpSocket, file: &File) {
-    file.read_at(&mut content_packet.data, content_packet.offset * 32)
+    file.read_at(&mut content_packet.data, content_packet.offset * ContentPacket::block_size())
         .expect("cant read");
-    let encoded: Vec<u8> = bincode::serialize(&content_packet).unwrap();
+    let encoded: [u8;std::mem::size_of::<ContentPacket>()] = unsafe {  transmute(content_packet) };
     socket.send_to(&encoded[..], host).expect("cant send_to");
 }
 
 fn blocks(len: u64) -> u64 {
-    return (len + 32 - 1) / 32;
+    return (len + ContentPacket::block_size() - 1) / ContentPacket::block_size();
 }
 
 fn receive() -> Result<bool, std::io::Error> {
@@ -140,9 +148,9 @@ fn receive() -> Result<bool, std::io::Error> {
     use std::collections::HashMap;
     let mut inbound_states = HashMap::new();
     loop {
-        let mut buf = [0; 1500]; //	[0; ::std::mem::size_of::ContentPacket];
+        let mut buf = [0; std::mem::size_of::<ContentPacket>()]; //	[0; ::std::mem::size_of::ContentPacket];
         let (_amt, src) = socket.recv_from(&mut buf).expect("socket error");
-        let content_packet: ContentPacket = bincode::deserialize(&buf).unwrap();
+        let content_packet: ContentPacket = unsafe { transmute(buf) };
         println!("received block: {:?}", content_packet.offset);
         if !inbound_states.contains_key(&content_packet.hash) {
             // new upload
@@ -162,7 +170,7 @@ fn receive() -> Result<bool, std::io::Error> {
         let mut inbound_state = inbound_states.get_mut(&content_packet.hash).unwrap();
         inbound_state
             .file
-            .write_at(&content_packet.data, content_packet.offset * 32)
+            .write_at(&content_packet.data, content_packet.offset * ContentPacket::block_size())
             .expect("cant write");
         if inbound_state
             .bitmap
