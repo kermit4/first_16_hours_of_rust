@@ -1,6 +1,6 @@
 THIS IS JUST A DEMO OF MY RUST SKILL LEVEL, IT IS NOT ACTUALLY VERY USEFUL
 
-Actually at 14 hours of Rust now.  The number of lines in the file worklog.txt shows the time spent at that point in the git history.
+Actually at 15 hours of Rust now.  The number of lines in the file worklog.txt shows the time spent at that point in the git history.
 
 If run with no args, it will listen for uploads.
 
@@ -12,10 +12,4 @@ i.e.
 ./udp_uploader /etc/passwd 127.0.0.1:34254
 ```
 
-should result in a file called "f000.." with the same content
-
-## DONE:
-	* retransmission
-	* transmission window scaling
-## TODO:
-	* reduce code duplication and break up long receive() function
+should result in a file of the same content named by its sha256

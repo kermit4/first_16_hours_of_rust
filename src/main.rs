@@ -24,10 +24,113 @@ struct InboundState {
     bitmap: BitVec,
     lastreq: u64,
     hash_checked: bool,
+    dups: u64,
 }
 
 impl InboundState {
-    fn req_missing(&mut self, socket: &UdpSocket, src: SocketAddr) {
+    fn new(content_packet: &ContentPacket) -> InboundState {
+        InboundState {
+                lastreq: 0,
+                file:  // File::create(
+				OpenOptions::new().create(true).read(true).write(true)
+                    .open(Path::new(&hex::encode(content_packet.hash))).expect("cant open file"),
+                len: content_packet.len,
+                blocks_remaining: blocks(content_packet.len),
+                next_missing: 0,
+                highest_seen: 0,
+				hash_checked: false,
+                hash: content_packet.hash,
+                requested: 0,
+                bitmap: BitVec::from_elem(blocks(content_packet.len) as usize, false),
+                dups:0,
+            }
+    }
+
+    fn handle_content_packet(
+        &mut self,
+        content_packet: &ContentPacket,
+        socket: &UdpSocket,
+        src: &SocketAddr,
+    ) {
+        if self.bitmap.get(content_packet.offset as usize).unwrap() {
+            println!("dup: {:?}", content_packet.offset);
+            self.dups += 1;
+        } else {
+            self.file
+                .write_at(
+                    &content_packet.data,
+                    content_packet.offset * ContentPacket::block_size(),
+                )
+                .expect("cant write");
+            self.blocks_remaining -= 1;
+            self.bitmap.set(content_packet.offset as usize, true);
+            if content_packet.offset > self.highest_seen {
+                self.highest_seen = content_packet.offset
+            }
+        }
+
+        if self.blocks_remaining == 0 {
+            if !self.hash_checked {
+                self.check_hash();
+                self.hash_checked = true;
+                drop(&self.file); // free up a file descriptor
+            }
+            let encoded: Vec<u8> = bincode::serialize(&RequestPacket {
+                offset: !0,
+                hash: self.hash,
+            })
+            .unwrap();
+            socket.send_to(&encoded[..], &src).expect("cant send_to");
+        } else {
+            self.request_more(socket, src);
+        }
+    }
+    fn request_more(&mut self, socket: &UdpSocket, src: &SocketAddr) {
+        let mut request_packet = RequestPacket {
+            offset: 0,
+            hash: self.hash,
+        };
+
+        self.lastreq += 1;
+        if self.lastreq >= blocks(self.len) {
+            // "done" but just filling in holes now
+            self.request_missing_or_next(&socket, &src);
+            return;
+        }
+
+        request_packet.offset = self.lastreq;
+        println!("requesting block {:?}", request_packet.offset);
+        let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
+        socket.send_to(&encoded[..], &src).expect("cant send_to");
+        self.requested += 1;
+
+        if (self.requested % 100) == 0 {
+            // push it to 1% packet loss
+            self.request_missing_or_next(&socket, &src);
+        }
+    }
+
+    fn check_hash(&mut self) {
+        // upload done
+
+        self.file.set_len(self.len).expect("cant set length");
+        println!(
+            "received {:?} dups {:?}",
+            &hex::encode(&self.hash),
+            self.dups
+        );
+        //			self.remove(&hex::encode(content_packet.hash));  this will just start over if packets are in flight, so it needs a delay
+        let mut sha256 = Sha256::new();
+        copy(&mut self.file, &mut sha256).expect("cant sha256 file");
+        let hash: [u8; 256 / 8] = sha256
+            .finalize()
+            .as_slice()
+            .try_into()
+            .expect("Wrong length");
+        println!("verified hash {:?}", &hex::encode(&hash));
+        std::assert_eq!(hash, self.hash);
+    }
+    fn request_missing_or_next(&mut self, socket: &UdpSocket, src: &SocketAddr) {
         if self.next_missing > self.highest_seen {
             self.next_missing = 0;
         }
@@ -168,97 +271,13 @@ fn receive() -> Result<bool, std::io::Error> {
         let (_amt, src) = socket.recv_from(&mut buf).expect("socket error");
         let content_packet: ContentPacket = unsafe { transmute(buf) };
         println!("received block: {:?}", content_packet.offset);
+
         if !inbound_states.contains_key(&content_packet.hash) {
-            // new upload
-            let inbound_state = InboundState {
-                lastreq: 0,
-                file:  // File::create(
-				OpenOptions::new()
-
-				            .create(true)
-				    .read(true)
-					    .write(true)
-						    .open(Path::new(&hex::encode(content_packet.hash)))?,
-                len: content_packet.len,
-                blocks_remaining: blocks(content_packet.len),
-                next_missing: 0,
-                highest_seen: 0,
-				hash_checked: false,
-                hash: content_packet.hash,
-                requested: 0,
-                bitmap: BitVec::from_elem(blocks(content_packet.len) as usize, false),
-            };
-            inbound_states.insert(content_packet.hash, inbound_state);
+            inbound_states.insert(content_packet.hash, InboundState::new(&content_packet));
         }
-        let mut inbound_state = inbound_states.get_mut(&content_packet.hash).unwrap();
-        inbound_state
-            .file
-            .write_at(
-                &content_packet.data,
-                content_packet.offset * ContentPacket::block_size(),
-            )
-            .expect("cant write");
-        if inbound_state
-            .bitmap
-            .get(content_packet.offset as usize)
+        inbound_states
+            .get_mut(&content_packet.hash)
             .unwrap()
-        {
-            println!("dup: {:?}", content_packet.offset);
-        } else {
-            inbound_state.blocks_remaining -= 1;
-            inbound_state
-                .bitmap
-                .set(content_packet.offset as usize, true);
-            if content_packet.offset > inbound_state.highest_seen {
-                inbound_state.highest_seen = content_packet.offset
-            }
-        }
-
-        let mut request_packet = RequestPacket {
-            offset: 0,
-            hash: content_packet.hash,
-        };
-
-        if inbound_state.blocks_remaining == 0 {
-            // upload done
-            if !inbound_state.hash_checked {
-                inbound_state.file.set_len(inbound_state.len)?;
-                println!("received {:?}", &hex::encode(&content_packet.hash));
-                //			inbound_states.remove(&hex::encode(content_packet.hash));  this will just start over if packets are in flight, so it needs a delay
-                let mut sha256 = Sha256::new();
-                copy(&mut inbound_state.file, &mut sha256)?;
-                let hash: [u8; 256 / 8] = sha256
-                    .finalize()
-                    .as_slice()
-                    .try_into()
-                    .expect("Wrong length");
-                println!("verified hash {:?}", &hex::encode(&hash));
-                std::assert_eq!(hash, inbound_state.hash);
-                inbound_state.hash_checked = true;
-                drop(&inbound_state.file);
-            }
-            request_packet.offset = !0;
-            let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
-            socket.send_to(&encoded[..], &src).expect("cant send_to");
-            continue;
-        }
-
-        inbound_state.lastreq += 1;
-        if inbound_state.lastreq >= blocks(inbound_state.len) {
-            // "done" but just filling in holes now
-            inbound_state.req_missing(&socket, src);
-            continue;
-        }
-
-        request_packet.offset = inbound_state.lastreq;
-        println!("requesting block {:?}", request_packet.offset);
-        let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
-        socket.send_to(&encoded[..], &src).expect("cant send_to");
-        inbound_state.requested += 1;
-
-        if (inbound_state.requested % 100) == 0 {
-            // push it to 1% packet loss
-            inbound_state.req_missing(&socket, src);
-        }
+            .handle_content_packet(&content_packet, &socket, &src);
     }
 }
