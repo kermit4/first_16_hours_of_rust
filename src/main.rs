@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::fs::File;
-use std::io::Read;
 use std::net::{SocketAddr, UdpSocket};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
@@ -78,10 +77,9 @@ fn main() {
 fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
     let socket = UdpSocket::bind("0.0.0.0:0").expect("bind failed");
     socket.set_read_timeout(Some(Duration::new(5, 0)))?;
-    let mut file = File::open(pathname)?;
+    let file = File::open(pathname)?;
     let metadata = fs::metadata(&pathname).expect("unable to read metadata");
-    let mut buffer = [0; 32]; // vec![0; 32 as usize];
-    file.read(&mut buffer).expect("buffer overflow");
+    let buffer = [0; 32]; // vec![0; 32 as usize];
     let mut started = false;
     loop {
         let mut hash = [0u8; 32];
