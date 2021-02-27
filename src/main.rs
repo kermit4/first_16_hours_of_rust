@@ -23,6 +23,9 @@ struct InboundState {
 
 impl InboundState {
 	fn req_missing(&mut self, socket: &UdpSocket, src: SocketAddr)  {
+		if self.next_missing > self.highest_seen { 
+			self.next_missing=0;
+		}  
 		while { 
 			self.next_missing += 1;
 			self.next_missing %= blocks(self.len);
@@ -31,18 +34,19 @@ impl InboundState {
 			.get(self.next_missing as usize)
 			.unwrap()
 		} {}
-		if self.next_missing > self.highest_seen && self.lastreq+1 < blocks(self.len) {
-			self.lastreq+=1;
+		if self.next_missing > self.highest_seen { // nothing missing
+			if self.lastreq+1 >= blocks(self.len) { // on the tail, dont dup the window
+				return;
+			}
+			self.lastreq+=1; // just increase window
 			self.next_missing=self.lastreq;
-//			if self.next_missing>=self.len {
-//				return;
-//			}  should really do nothing here, not request more, it'll be dups, we're on the tail
 		}
 		let mut request_packet = RequestPacket {
             offset: 0,
             hash: self.hash,
         };
 		request_packet.offset = self.next_missing;
+		println!("requesting block {:?}", request_packet.offset);
 		let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
 		socket.send_to(&encoded[..], &src).expect("cant send_to");
 		self.requested += 1;
@@ -106,7 +110,6 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
 					continue;
 				},
 			};
-//            let (_amt, _src) = socket.recv_from(&mut buf).expect("socket error");
             let req: RequestPacket = bincode::deserialize(&buf).unwrap();
 			if req.offset == !0 {
 				println!("sent!");
@@ -144,7 +147,7 @@ fn receive() -> Result<bool, std::io::Error> {
         let (_amt, src) = socket.recv_from(&mut buf).expect("socket error");
         let content_packet: ContentPacket = bincode::deserialize(&buf).unwrap();
         println!("received block: {:?}", content_packet.offset);
-        if !inbound_states.contains_key(&hex::encode(content_packet.hash)) {
+        if !inbound_states.contains_key(&content_packet.hash) {
             // new upload
             let inbound_state = InboundState {
                 lastreq: 0,
@@ -157,10 +160,10 @@ fn receive() -> Result<bool, std::io::Error> {
                 requested: 0,
                 bitmap: BitVec::from_elem(blocks(content_packet.len) as usize, false),
             };
-            inbound_states.insert(hex::encode(content_packet.hash), inbound_state);
+            inbound_states.insert(content_packet.hash, inbound_state);
         }
         let mut inbound_state = inbound_states
-            .get_mut(&hex::encode(content_packet.hash))
+            .get_mut(&content_packet.hash)
             .unwrap();
         inbound_state
             .file
@@ -190,7 +193,7 @@ fn receive() -> Result<bool, std::io::Error> {
         if inbound_state.blocks_remaining == 0 { 
             // upload done
             inbound_state.file.set_len(inbound_state.len)?;
-            println!("received {:?}",content_packet.hash);
+            println!("received {:?}",&hex::encode(&content_packet.hash));
             //			inbound_states.remove(&hex::encode(content_packet.hash));  this will just start over if packets are in flight, so it needs a delay
 			request_packet.offset = !0; 
 			let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
