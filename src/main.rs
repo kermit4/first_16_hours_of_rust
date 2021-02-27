@@ -53,6 +53,7 @@ impl InboundState {
 }
 
 #[repr(C)] 
+//#[derive(Copy,Clone)]
 struct ContentPacket {
     len: u64,
     offset: u64,
@@ -89,6 +90,14 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
     let metadata = fs::metadata(&pathname).expect("unable to read metadata");
     let buffer = [0; ContentPacket::block_size() as usize]; // vec![0; 32 as usize];
     let mut started = false;
+
+	fn send_block(mut content_packet: ContentPacket, host: &String, socket: &UdpSocket, file: &File) {
+		file.read_at(&mut content_packet.data, content_packet.offset * ContentPacket::block_size())
+			.expect("cant read");
+		let encoded: [u8;std::mem::size_of::<ContentPacket>()] = unsafe {  transmute(content_packet) };
+		socket.send_to(&encoded[..], host).expect("cant send_to");
+	}
+
     loop {
         let mut hash = [0u8; 32];
         hex::decode_to_slice(
@@ -106,7 +115,7 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
             started = true;
             send_block(content_packet, host, &socket, &file);
         } else {
-            let mut buf = [0; 1500]; //	[0; ::std::mem::size_of::ContentPacket];
+            let mut buf = [0; std::mem::size_of::<ContentPacket>()];
             match socket.recv_from(&mut buf) {
                 Ok(_r) => true,
                 Err(_e) => {
@@ -130,13 +139,6 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
             send_block(content_packet, host, &socket, &file);
         }
     }
-}
-
-fn send_block(mut content_packet: ContentPacket, host: &String, socket: &UdpSocket, file: &File) {
-    file.read_at(&mut content_packet.data, content_packet.offset * ContentPacket::block_size())
-        .expect("cant read");
-    let encoded: [u8;std::mem::size_of::<ContentPacket>()] = unsafe {  transmute(content_packet) };
-    socket.send_to(&encoded[..], host).expect("cant send_to");
 }
 
 fn blocks(len: u64) -> u64 {
@@ -180,13 +182,13 @@ fn receive() -> Result<bool, std::io::Error> {
             println!("dup: {:?}", content_packet.offset);
         } else {
             inbound_state.blocks_remaining -= 1;
+			inbound_state
+				.bitmap
+				.set(content_packet.offset as usize, true);
+			if content_packet.offset > inbound_state.highest_seen {
+				inbound_state.highest_seen = content_packet.offset
+			}
         }
-        if content_packet.offset > inbound_state.highest_seen {
-            inbound_state.highest_seen = content_packet.offset
-        }
-        inbound_state
-            .bitmap
-            .set(content_packet.offset as usize, true);
 
         let mut request_packet = RequestPacket {
             offset: 0,
