@@ -1,29 +1,29 @@
 use bit_vec::BitVec;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::convert::TryInto;
 use std::env;
 use std::fs;
 use std::fs::File;
+use std::fs::OpenOptions;
+use std::io::copy;
+use std::mem::transmute;
 use std::net::{SocketAddr, UdpSocket};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::time::Duration;
-use std::mem::transmute;
-use std::io::copy;
-use sha2::{Sha256,Digest};
-use std::convert::TryInto;
-use std::fs::OpenOptions;
 
 struct InboundState {
     file: File,
     len: u64,
-    hash: [u8; 256/8],
+    hash: [u8; 256 / 8],
     blocks_remaining: u64,
     next_missing: u64,
     requested: u64,
     highest_seen: u64,
     bitmap: BitVec,
     lastreq: u64,
-	hash_checked: bool,
+    hash_checked: bool,
 }
 
 impl InboundState {
@@ -57,26 +57,25 @@ impl InboundState {
     }
 }
 
-#[repr(C)] 
+#[repr(C)]
 //#[derive(Copy,Clone)]
 struct ContentPacket {
     len: u64,
     offset: u64,
-    hash: [u8; 256/8],
+    hash: [u8; 256 / 8],
     data: [u8; ContentPacket::block_size() as usize], // serde had a strange 32 byte limit.  also serde would not be a portable network protocol format.
 }
 
 impl ContentPacket {
-	const fn block_size() -> u64 {
-		64 // intentionally small for faster testing
-	}
+    const fn block_size() -> u64 {
+        64 // intentionally small for faster testing
+    }
 }
-
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct RequestPacket {
     offset: u64,
-    hash: [u8; 256/8],
+    hash: [u8; 256 / 8],
 }
 
 fn main() {
@@ -96,16 +95,29 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
     let buffer = [0; ContentPacket::block_size() as usize]; // vec![0; 32 as usize];
     let mut started = false;
 
-	fn send_block(mut content_packet: ContentPacket, host: &String, socket: &UdpSocket, file: &File) {
-		file.read_at(&mut content_packet.data, content_packet.offset * ContentPacket::block_size())
-			.expect("cant read");
-		let encoded: [u8;std::mem::size_of::<ContentPacket>()] = unsafe {  transmute(content_packet) };
-		socket.send_to(&encoded[..], host).expect("cant send_to");
-	}
+    fn send_block(
+        mut content_packet: ContentPacket,
+        host: &String,
+        socket: &UdpSocket,
+        file: &File,
+    ) {
+        file.read_at(
+            &mut content_packet.data,
+            content_packet.offset * ContentPacket::block_size(),
+        )
+        .expect("cant read");
+        let encoded: [u8; std::mem::size_of::<ContentPacket>()] =
+            unsafe { transmute(content_packet) };
+        socket.send_to(&encoded[..], host).expect("cant send_to");
+    }
 
-	let mut sha256 = Sha256::new();
-	copy(&mut file, &mut sha256)?;
-    let hash =  sha256.finalize().as_slice().try_into().expect("Wrong length");
+    let mut sha256 = Sha256::new();
+    copy(&mut file, &mut sha256)?;
+    let hash = sha256
+        .finalize()
+        .as_slice()
+        .try_into()
+        .expect("Wrong length");
     loop {
         if !started {
             let content_packet = ContentPacket {
@@ -181,7 +193,10 @@ fn receive() -> Result<bool, std::io::Error> {
         let mut inbound_state = inbound_states.get_mut(&content_packet.hash).unwrap();
         inbound_state
             .file
-            .write_at(&content_packet.data, content_packet.offset * ContentPacket::block_size())
+            .write_at(
+                &content_packet.data,
+                content_packet.offset * ContentPacket::block_size(),
+            )
             .expect("cant write");
         if inbound_state
             .bitmap
@@ -191,12 +206,12 @@ fn receive() -> Result<bool, std::io::Error> {
             println!("dup: {:?}", content_packet.offset);
         } else {
             inbound_state.blocks_remaining -= 1;
-			inbound_state
-				.bitmap
-				.set(content_packet.offset as usize, true);
-			if content_packet.offset > inbound_state.highest_seen {
-				inbound_state.highest_seen = content_packet.offset
-			}
+            inbound_state
+                .bitmap
+                .set(content_packet.offset as usize, true);
+            if content_packet.offset > inbound_state.highest_seen {
+                inbound_state.highest_seen = content_packet.offset
+            }
         }
 
         let mut request_packet = RequestPacket {
@@ -206,18 +221,22 @@ fn receive() -> Result<bool, std::io::Error> {
 
         if inbound_state.blocks_remaining == 0 {
             // upload done
-			if ! inbound_state.hash_checked {
-				inbound_state.file.set_len(inbound_state.len)?;
-				println!("received {:?}", &hex::encode(&content_packet.hash));
-				//			inbound_states.remove(&hex::encode(content_packet.hash));  this will just start over if packets are in flight, so it needs a delay
-				let mut sha256 = Sha256::new();
-				copy(&mut inbound_state.file, &mut sha256)?;
-				let hash: [u8;256/8] = sha256.finalize().as_slice().try_into().expect("Wrong length");
-				println!("verified hash {:?}", &hex::encode(&hash));
-				std::assert_eq!(hash,inbound_state.hash);
-				inbound_state.hash_checked=true;
-				drop(&inbound_state.file);
-			}
+            if !inbound_state.hash_checked {
+                inbound_state.file.set_len(inbound_state.len)?;
+                println!("received {:?}", &hex::encode(&content_packet.hash));
+                //			inbound_states.remove(&hex::encode(content_packet.hash));  this will just start over if packets are in flight, so it needs a delay
+                let mut sha256 = Sha256::new();
+                copy(&mut inbound_state.file, &mut sha256)?;
+                let hash: [u8; 256 / 8] = sha256
+                    .finalize()
+                    .as_slice()
+                    .try_into()
+                    .expect("Wrong length");
+                println!("verified hash {:?}", &hex::encode(&hash));
+                std::assert_eq!(hash, inbound_state.hash);
+                inbound_state.hash_checked = true;
+                drop(&inbound_state.file);
+            }
             request_packet.offset = !0;
             let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
             socket.send_to(&encoded[..], &src).expect("cant send_to");
