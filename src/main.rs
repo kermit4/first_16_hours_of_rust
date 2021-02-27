@@ -85,12 +85,12 @@ impl InboundState {
             self.request_more(socket, src);
         }
     }
+
     fn request_more(&mut self, socket: &UdpSocket, src: &SocketAddr) {
         let mut request_packet = RequestPacket {
             offset: 0,
             hash: self.hash,
         };
-
         self.lastreq += 1;
         if self.lastreq >= blocks(self.len) {
             // "done" but just filling in holes now
