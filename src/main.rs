@@ -4,7 +4,7 @@ use std::env;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
-use std::net::{UdpSocket, SocketAddr };
+use std::net::{SocketAddr, UdpSocket};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::time::Duration;
@@ -22,35 +22,34 @@ struct InboundState {
 }
 
 impl InboundState {
-	fn req_missing(&mut self, socket: &UdpSocket, src: SocketAddr)  {
-		if self.next_missing > self.highest_seen { 
-			self.next_missing=0;
-		}  
-		while { 
-			self.next_missing += 1;
-			self.next_missing %= blocks(self.len);
-			self
-			.bitmap
-			.get(self.next_missing as usize)
-			.unwrap()
-		} {}
-		if self.next_missing > self.highest_seen { // nothing missing
-			if self.lastreq+1 >= blocks(self.len) { // on the tail, dont dup the window
-				return;
-			}
-			self.lastreq+=1; // just increase window
-			self.next_missing=self.lastreq;
-		}
-		let mut request_packet = RequestPacket {
+    fn req_missing(&mut self, socket: &UdpSocket, src: SocketAddr) {
+        if self.next_missing > self.highest_seen {
+            self.next_missing = 0;
+        }
+        while {
+            self.next_missing += 1;
+            self.next_missing %= blocks(self.len);
+            self.bitmap.get(self.next_missing as usize).unwrap()
+        } {}
+        if self.next_missing > self.highest_seen {
+            // nothing missing
+            if self.lastreq + 1 >= blocks(self.len) {
+                // on the tail, dont dup the window
+                return;
+            }
+            self.lastreq += 1; // just increase window
+            self.next_missing = self.lastreq;
+        }
+        let mut request_packet = RequestPacket {
             offset: 0,
             hash: self.hash,
         };
-		request_packet.offset = self.next_missing;
-		println!("requesting block {:?}", request_packet.offset);
-		let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
-		socket.send_to(&encoded[..], &src).expect("cant send_to");
-		self.requested += 1;
-	}
+        request_packet.offset = self.next_missing;
+        println!("requesting block {:?}", request_packet.offset);
+        let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
+        socket.send_to(&encoded[..], &src).expect("cant send_to");
+        self.requested += 1;
+    }
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -78,7 +77,7 @@ fn main() {
 
 fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
     let socket = UdpSocket::bind("0.0.0.0:0").expect("bind failed");
-	socket.set_read_timeout(Some(Duration::new(5, 0)))?;
+    socket.set_read_timeout(Some(Duration::new(5, 0)))?;
     let mut file = File::open(pathname)?;
     let metadata = fs::metadata(&pathname).expect("unable to read metadata");
     let mut buffer = [0; 32]; // vec![0; 32 as usize];
@@ -103,18 +102,18 @@ fn send(pathname: &String, host: &String) -> Result<bool, std::io::Error> {
         } else {
             let mut buf = [0; 1500]; //	[0; ::std::mem::size_of::ContentPacket];
             match socket.recv_from(&mut buf) {
-				Ok(_r) => true,
-				Err(_e) => { 
-					started=false;
-					println!("stalled, bumping");
-					continue;
-				},
-			};
+                Ok(_r) => true,
+                Err(_e) => {
+                    started = false;
+                    println!("stalled, bumping");
+                    continue;
+                }
+            };
             let req: RequestPacket = bincode::deserialize(&buf).unwrap();
-			if req.offset == !0 {
-				println!("sent!");
-				std::process::exit(0);
-			}
+            if req.offset == !0 {
+                println!("sent!");
+                std::process::exit(0);
+            }
             println!("sending block: {:?}", req.offset);
             let content_packet = ContentPacket {
                 len: metadata.len(),
@@ -156,15 +155,13 @@ fn receive() -> Result<bool, std::io::Error> {
                 blocks_remaining: blocks(content_packet.len),
                 next_missing: 0,
                 highest_seen: 0,
-				hash: content_packet.hash,
+                hash: content_packet.hash,
                 requested: 0,
                 bitmap: BitVec::from_elem(blocks(content_packet.len) as usize, false),
             };
             inbound_states.insert(content_packet.hash, inbound_state);
         }
-        let mut inbound_state = inbound_states
-            .get_mut(&content_packet.hash)
-            .unwrap();
+        let mut inbound_state = inbound_states.get_mut(&content_packet.hash).unwrap();
         inbound_state
             .file
             .write_at(&content_packet.data, content_packet.offset * 32)
@@ -176,47 +173,47 @@ fn receive() -> Result<bool, std::io::Error> {
         {
             println!("dup: {:?}", content_packet.offset);
         } else {
-			inbound_state.blocks_remaining-=1;
-		}
+            inbound_state.blocks_remaining -= 1;
+        }
         if content_packet.offset > inbound_state.highest_seen {
             inbound_state.highest_seen = content_packet.offset
         }
         inbound_state
             .bitmap
             .set(content_packet.offset as usize, true);
-        
-		let mut request_packet = RequestPacket {
+
+        let mut request_packet = RequestPacket {
             offset: 0,
             hash: content_packet.hash,
         };
 
-        if inbound_state.blocks_remaining == 0 { 
+        if inbound_state.blocks_remaining == 0 {
             // upload done
             inbound_state.file.set_len(inbound_state.len)?;
-            println!("received {:?}",&hex::encode(&content_packet.hash));
+            println!("received {:?}", &hex::encode(&content_packet.hash));
             //			inbound_states.remove(&hex::encode(content_packet.hash));  this will just start over if packets are in flight, so it needs a delay
-			request_packet.offset = !0; 
-			let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
-			socket.send_to(&encoded[..], &src).expect("cant send_to");
+            request_packet.offset = !0;
+            let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
+            socket.send_to(&encoded[..], &src).expect("cant send_to");
             continue;
         }
 
         inbound_state.lastreq += 1;
         if inbound_state.lastreq >= blocks(inbound_state.len) {
             // "done" but just filling in holes now
-            inbound_state.req_missing(&socket, src );
-			continue;
-        } 
-		
-		request_packet.offset = inbound_state.lastreq;
-		println!("requesting block {:?}", request_packet.offset);
+            inbound_state.req_missing(&socket, src);
+            continue;
+        }
+
+        request_packet.offset = inbound_state.lastreq;
+        println!("requesting block {:?}", request_packet.offset);
         let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
         socket.send_to(&encoded[..], &src).expect("cant send_to");
         inbound_state.requested += 1;
 
         if (inbound_state.requested % 100) == 0 {
             // push it to 1% packet loss
-                inbound_state.req_missing(&socket, src);
+            inbound_state.req_missing(&socket, src);
         }
     }
 }
