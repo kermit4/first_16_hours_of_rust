@@ -4,7 +4,7 @@ use std::env;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
-use std::net::UdpSocket;
+use std::net::{UdpSocket, SocketAddr };
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::time::Duration;
@@ -12,7 +12,8 @@ use std::time::Duration;
 struct InboundState {
     file: File,
     len: u64,
-    first_missing: u64,
+    hash: [u8; 32],
+    blocks_remaining: u64,
     next_missing: u64,
     requested: u64,
     highest_seen: u64,
@@ -21,7 +22,7 @@ struct InboundState {
 }
 
 impl InboundState {
-	fn next_missing(&mut self) -> u64 {
+	fn req_missing(&mut self, socket: &UdpSocket, src: SocketAddr)  {
 		while { 
 			self.next_missing += 1;
 			self.next_missing %= blocks(self.len);
@@ -30,14 +31,21 @@ impl InboundState {
 			.get(self.next_missing as usize)
 			.unwrap()
 		} {}
-		if self.next_missing > self.highest_seen && self.lastreq+1 < self.len{
+		if self.next_missing > self.highest_seen && self.lastreq+1 < blocks(self.len) {
 			self.lastreq+=1;
 			self.next_missing=self.lastreq;
 //			if self.next_missing>=self.len {
 //				return;
 //			}  should really do nothing here, not request more, it'll be dups, we're on the tail
 		}
-		return self.next_missing;
+		let mut request_packet = RequestPacket {
+            offset: 0,
+            hash: self.hash,
+        };
+		request_packet.offset = self.next_missing;
+		let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
+		socket.send_to(&encoded[..], &src).expect("cant send_to");
+		self.requested += 1;
 	}
 }
 
@@ -142,9 +150,10 @@ fn receive() -> Result<bool, std::io::Error> {
                 lastreq: 0,
                 file: File::create(Path::new(&hex::encode(content_packet.hash)))?,
                 len: content_packet.len,
-                first_missing: 0,
+                blocks_remaining: blocks(content_packet.len),
                 next_missing: 0,
                 highest_seen: 0,
+				hash: content_packet.hash,
                 requested: 0,
                 bitmap: BitVec::from_elem(blocks(content_packet.len) as usize, false),
             };
@@ -163,35 +172,27 @@ fn receive() -> Result<bool, std::io::Error> {
             .unwrap()
         {
             println!("dup: {:?}", content_packet.offset);
-        }
+        } else {
+			inbound_state.blocks_remaining-=1;
+		}
         if content_packet.offset > inbound_state.highest_seen {
             inbound_state.highest_seen = content_packet.offset
         }
         inbound_state
             .bitmap
             .set(content_packet.offset as usize, true);
-        if content_packet.offset == inbound_state.first_missing {
-            while inbound_state.first_missing < blocks(inbound_state.len)
-                && inbound_state
-                    .bitmap
-                    .get(inbound_state.first_missing as usize)
-                    .unwrap()
-            {
-                inbound_state.first_missing += 1;
-            }
-        }
         
 		let mut request_packet = RequestPacket {
             offset: 0,
             hash: content_packet.hash,
         };
 
-        if inbound_state.first_missing == blocks(inbound_state.len) {
+        if inbound_state.blocks_remaining == 0 { 
             // upload done
             inbound_state.file.set_len(inbound_state.len)?;
             println!("received {:?}",content_packet.hash);
             //			inbound_states.remove(&hex::encode(content_packet.hash));  this will just start over if packets are in flight, so it needs a delay
-			request_packet.offset = !0;
+			request_packet.offset = !0; 
 			let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
 			socket.send_to(&encoded[..], &src).expect("cant send_to");
             continue;
@@ -200,34 +201,19 @@ fn receive() -> Result<bool, std::io::Error> {
         inbound_state.lastreq += 1;
         if inbound_state.lastreq >= blocks(inbound_state.len) {
             // "done" but just filling in holes now
-            request_packet.offset = inbound_state.next_missing();
-            println!("requesting missing block {:?}", request_packet.offset);
-        } else {
-            request_packet.offset = inbound_state.lastreq;
-            println!("requesting block {:?}", request_packet.offset);
-        }
+            inbound_state.req_missing(&socket, src );
+			continue;
+        } 
+		
+		request_packet.offset = inbound_state.lastreq;
+		println!("requesting block {:?}", request_packet.offset);
         let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
         socket.send_to(&encoded[..], &src).expect("cant send_to");
         inbound_state.requested += 1;
 
         if (inbound_state.requested % 100) == 0 {
             // push it to 1% packet loss
-//            if inbound_state.next_missing < inbound_state.highest_seen
-  //              || inbound_state.lastreq + 1 >= blocks(inbound_state.len)
-//            {
-                request_packet.offset = inbound_state.next_missing();
-                println!(
-                    "requesting extra block {:?}",
-                    request_packet.offset
-                );
-        //    } else {
-      //          inbound_state.lastreq += 1;
-    //            request_packet.offset = inbound_state.lastreq;
-  //              println!("requesting extra block {:?}", request_packet.offset);
-//            }
-            let encoded: Vec<u8> = bincode::serialize(&request_packet).unwrap();
-            socket.send_to(&encoded[..], &src).expect("cant send_to");
-            inbound_state.requested += 1;
+                inbound_state.req_missing(&socket, src);
         }
     }
 }
