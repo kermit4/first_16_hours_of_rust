@@ -171,7 +171,7 @@ struct ContentPacket {
 
 impl ContentPacket {
     const fn block_size() -> u64 {
-        64 // intentionally small for faster testing
+        1024
     }
 }
 
